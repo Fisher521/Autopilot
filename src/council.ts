@@ -30,6 +30,7 @@ export interface Vote {
   action: 'approve' | 'reject' | 'abstain' | 'needs-info'
   score?: number          // 0-10 评分（评估时用）
   reasoning: string
+  synthesis?: string      // P1-1: 投票前必须先综合理解（文件路径、行号、具体发现）
   info?: string           // 补充信息
   suggestion?: string     // 建议的替代方案
   confidence: number      // 0-1，对自己判断的信心
@@ -38,11 +39,12 @@ export interface Vote {
 
 export interface DecisionContext {
   id: string
-  type: 'keep-or-discard' | 'direction' | 'strategy-adjust' | 'goal-change' | 'emergency'
+  type: 'keep-or-discard' | 'direction' | 'policy-change' | 'escalation' | 'goal-change' | 'emergency'
   description: string
   diff?: string           // 代码变更
   metrics?: Record<string, number>
   constraints?: string[]
+  escalation?: { type: string; description: string; context: Record<string, unknown> }
   urgency: 'low' | 'medium' | 'high' | 'critical'
 }
 
@@ -58,7 +60,7 @@ export interface DecisionResult {
 const DEFAULT_VOTERS: Voter[] = [
   {
     id: 'human',
-    name: 'Fisher',
+    name: process.env.AUTOPILOT_USER_NAME ?? 'Human',
     type: 'human',
     weight: 3.0,          // 人的权重是 AI 的 3 倍
     trustScore: 1.0,       // 人的信任分不衰减
@@ -125,7 +127,24 @@ export function getVoters(): Voter[] {
 export function resolveVotes(
   context: DecisionContext,
   votes: Vote[],
+  requireSynthesis: boolean = false,
 ): DecisionResult {
+  // P1-1: 如果要求 synthesis，拒绝没有 synthesis 的 AI 投票
+  if (requireSynthesis) {
+    for (const vote of votes) {
+      const voter = voters.find(v => v.id === vote.voterId)
+      if (voter?.type === 'agent' && vote.action !== 'abstain' && !vote.synthesis?.trim()) {
+        return {
+          decision: 'needs-info',
+          weightedScore: 0,
+          votes,
+          humanOverride: false,
+          reasoning: `Vote from "${voter.name}" rejected: missing synthesis. You must summarize your understanding before voting. Never write "based on the findings" — prove you understood.`,
+        }
+      }
+    }
+  }
+
   // 找人的投票
   const humanVote = votes.find(v => {
     const voter = voters.find(vt => vt.id === v.voterId)
@@ -257,22 +276,54 @@ Description: ${context.description}
   }
 
   prompt += `
-You have three options:
+## BEFORE YOU VOTE — SYNTHESIZE FIRST
+
+You MUST first summarize what you understood. Include specific:
+- File paths and line numbers
+- What changed and why
+- Key findings or concerns
+
+NEVER write "based on the findings" or "looks good overall" — that's lazy delegation.
+Prove you read and understood by citing specifics.
+
+## Your Vote
 1. APPROVE — this change/direction is good
 2. REJECT — this is bad, explain why and suggest alternatives
-3. NEEDS-INFO — you can't decide without more information, say what you need
-
-Also provide:
-- score: 0-10 (how good is this?)
-- confidence: 0-1 (how sure are you?)
-- reasoning: why this vote?
-- suggestion: alternative approach if rejecting
+3. NEEDS-INFO — you can't decide without more information
 
 Output JSON:
-{ "action": "approve|reject|needs-info", "score": 0-10, "confidence": 0-1, "reasoning": "...", "suggestion": "...", "info": "..." }
+{
+  "synthesis": "REQUIRED: your understanding of the situation with specific details",
+  "action": "approve|reject|needs-info",
+  "score": 0-10,
+  "confidence": 0-1,
+  "reasoning": "why this vote",
+  "suggestion": "alternative if rejecting",
+  "info": "what you need if needs-info"
+}
 `
 
   return prompt
+}
+
+/**
+ * 处理 escalation — 执行者上报的问题，议会投票决定 policy
+ *
+ * 这是 council 和 selfProgram 的桥梁：
+ *   executor escalate → council 投票 → 结果转成 policy 变更
+ */
+export function buildEscalationContext(
+  escalation: { type: string; description: string; context: Record<string, unknown> },
+  currentPolicy: string,
+  roundsCompleted: number,
+): DecisionContext {
+  return {
+    id: `esc-decision-${Date.now()}`,
+    type: 'escalation',
+    description: `[${escalation.type}] ${escalation.description}\n\nCurrent policy: ${currentPolicy} (${roundsCompleted} rounds completed)`,
+    escalation,
+    urgency: escalation.type === 'policy-expired' ? 'medium' : 'high',
+  }
 }
 
 /**
@@ -297,5 +348,68 @@ export function buildTelegramVoteMessage(context: DecisionContext): string {
   msg += `/vote info <what you need>\n`
   msg += `\nOr just ignore — AI council will decide in 5 min.`
 
+  return msg
+}
+
+/**
+ * 生成 policy 变更投票 prompt — escalation 场景用
+ *
+ * 和普通投票不同：这里要求投票者选择下一个 policy，不只是 approve/reject
+ */
+export function buildPolicyVotePrompt(
+  escalation: { type: string; description: string; context: Record<string, unknown> },
+  currentPolicy: string,
+  policyHistory: string[],
+): string {
+  return `You are a voting member of the autopilot decision council.
+
+The executor has escalated a decision to the council.
+
+## Escalation
+Type: ${escalation.type}
+Description: ${escalation.description}
+Context: ${JSON.stringify(escalation.context, null, 2)}
+
+## Current Policy: ${currentPolicy}
+## Policy History: ${policyHistory.join(' → ') || 'None'}
+
+## Available Policies
+- research — read-only, gather information, report back
+- analyze — analyze existing data, find patterns, no new experiments
+- explore — try different approaches, bold experiments
+- exploit — refine current best approach, small iterations
+- consolidate — clean up, simplify, finalize
+
+## Your Vote
+Choose the next policy and explain why.
+
+Output JSON:
+{
+  "policy": "research|analyze|explore|exploit|consolidate",
+  "reasoning": "why this policy now",
+  "instructions": "optional specific instructions for the executor",
+  "maxRounds": 10,
+  "confidence": 0.8
+}
+`
+}
+
+/**
+ * Telegram policy 投票卡片
+ */
+export function buildTelegramPolicyMessage(
+  escalation: { type: string; description: string },
+  currentPolicy: string,
+): string {
+  let msg = `⚡ **Policy Decision Required**\n\n`
+  msg += `Escalation: [${escalation.type}] ${escalation.description}\n`
+  msg += `Current policy: ${currentPolicy}\n\n`
+  msg += `Reply with one of:\n`
+  msg += `/policy research — 先调研\n`
+  msg += `/policy analyze — 分析数据\n`
+  msg += `/policy explore — 试新方向\n`
+  msg += `/policy exploit — 精炼当前\n`
+  msg += `/policy consolidate — 收尾\n`
+  msg += `\nOr ignore — AI council decides in 5 min.`
   return msg
 }
