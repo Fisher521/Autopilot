@@ -140,7 +140,10 @@ export async function extractMetricsViaCLI(
 
     const result = await spawnCLI('sh', ['-c', metric.extractCommand], { cwd, timeoutMs: 30_000 })
 
-    if (result.exitCode === 0) {
+    if (metric.direction === 'pass-fail') {
+      // pass-fail: only care about exit code, normalize to 0 or 1
+      results[metric.name] = result.exitCode === 0 ? 1 : 0
+    } else if (result.exitCode === 0) {
       const value = parseFloat(result.stdout.trim())
       if (!isNaN(value)) {
         results[metric.name] = value

@@ -256,7 +256,8 @@ export async function runLoop(config: LoopConfig): Promise<LoopResult> {
     const isBetter = !config.bestMetrics || finalScore > 0
 
     if (isBetter) {
-      await config.onKeep(round, finalScore, score.details)
+      const outputSnippet = output.length > 300 ? output.slice(0, 300) + '...' : output
+      await config.onKeep(round, finalScore, [...score.details, `[output] ${outputSnippet}`])
       config.bestMetrics = { ...metricResults }
       kept++
       await config.onRoundEnd?.(round, `kept (score: ${finalScore.toFixed(2)})`)
