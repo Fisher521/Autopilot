@@ -21,4 +21,5 @@ Thumbs.db
 
 # Runtime data
 results.tsv
+.autopilot-state.json
 *.log

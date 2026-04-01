@@ -21,6 +21,8 @@
  * executor 遇到任何需要判断的事 → 不自己决定 → escalate 给 council
  */
 
+import { getAvailableTools } from './toolGate.js'
+
 // ============================================================
 // Types
 // ============================================================
@@ -454,7 +456,6 @@ export function buildExecutorPrompt(program: SelfProgram): string {
   // P0-1: 获取当前 policy 下可用的工具
   let availableToolsStr = ''
   try {
-    const { getAvailableTools } = require('./toolGate.js')
     const tools = getAvailableTools(p.type, 'executor')
     availableToolsStr = tools.join(', ')
   } catch {
