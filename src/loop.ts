@@ -167,19 +167,61 @@ export async function runLoop(config: LoopConfig): Promise<LoopResult> {
       continue
     }
 
-    // 2. 收集 metrics
+    // 2. research/analyze — report only, no scoring or keep/discard
+    if (policy.type === 'research' || policy.type === 'analyze') {
+      // These policies produce reports, not experiments — always keep output
+      const outputSummary = output.length > 500 ? output.slice(0, 500) + '...' : output
+      await config.onKeep(round, 0, [`[${policy.type}] ${outputSummary}`])
+      kept++
+
+      // Still check maxRounds for escalation
+      const tick = tickRound(program, {}, config.bestMetrics)
+      if (tick.shouldEscalate && tick.escalation) {
+        await config.onEscalate(tick.escalation)
+        return {
+          rounds: round, kept, discarded,
+          escalated: true,
+          escalationReason: tick.escalation.description,
+        }
+      }
+
+      await config.onRoundEnd?.(round, `${policy.type} report collected`)
+      continue
+    }
+
+    // 3. 收集 metrics
     let metricResults: Record<string, number> = {}
     if (policy.metrics.length > 0) {
       metricResults = await config.extractMetrics(policy.metrics)
     }
 
-    // 3. 检查 constraints
+    // 4. 检查 constraints
     let constraintResults: Record<string, boolean> = {}
     if (policy.constraints.length > 0) {
       constraintResults = await config.checkConstraints(policy.constraints)
     }
 
-    // 4. 评分（纯计算，不是决策）
+    // 5. 评分（纯计算，不是决策）— skip if no metrics defined
+    if (policy.metrics.length === 0) {
+      // No metrics = no scoring. Keep output by default.
+      const outputSummary = output.length > 500 ? output.slice(0, 500) + '...' : output
+      await config.onKeep(round, 0, [`[no-metrics] ${outputSummary}`])
+      kept++
+
+      const tick = tickRound(program, {}, config.bestMetrics)
+      if (tick.shouldEscalate && tick.escalation) {
+        await config.onEscalate(tick.escalation)
+        return {
+          rounds: round, kept, discarded,
+          escalated: true,
+          escalationReason: tick.escalation.description,
+        }
+      }
+
+      await config.onRoundEnd?.(round, 'kept (no metrics)')
+      continue
+    }
+
     const score = scoreExperiment(
       policy.metrics,
       policy.constraints,
@@ -187,7 +229,7 @@ export async function runLoop(config: LoopConfig): Promise<LoopResult> {
       constraintResults,
     )
 
-    // 5. hard constraint 违反 → 直接 discard（这是规则，不是决策）
+    // 6. hard constraint 违反 → 直接 discard（这是规则，不是决策）
     if (score.hardFail) {
       await config.onDiscard(round, `Hard constraint violated: ${score.details.filter(d => d.includes('HARD FAIL')).join(', ')}`)
       discarded++
@@ -195,7 +237,7 @@ export async function runLoop(config: LoopConfig): Promise<LoopResult> {
       continue
     }
 
-    // 6. 检查是否需要 escalate
+    // 7. 检查是否需要 escalate
     const tick = tickRound(program, metricResults, config.bestMetrics)
 
     if (tick.shouldEscalate && tick.escalation) {
@@ -209,10 +251,9 @@ export async function runLoop(config: LoopConfig): Promise<LoopResult> {
       }
     }
 
-    // 7. 没有 escalate → keep/discard 基于分数
-    //    但注意：这里的判定是机械的（分数比较），不是"决策"
+    // 8. 没有 escalate → keep/discard 基于分数
     const finalScore = score.weightedScore - score.softPenalty
-    const isBetter = !config.bestMetrics || finalScore > 0  // 简化：有分就 keep
+    const isBetter = !config.bestMetrics || finalScore > 0
 
     if (isBetter) {
       await config.onKeep(round, finalScore, score.details)
@@ -223,12 +264,6 @@ export async function runLoop(config: LoopConfig): Promise<LoopResult> {
       await config.onDiscard(round, `Score ${finalScore.toFixed(2)} not better than baseline`)
       discarded++
       await config.onRoundEnd?.(round, `discarded (score: ${finalScore.toFixed(2)})`)
-    }
-
-    // research 和 analyze policy 不做 keep/discard，每轮都汇报
-    if (policy.type === 'research' || policy.type === 'analyze') {
-      // 这些 policy 下，output 就是汇报，不需要 judge
-      // 但仍然要 tickRound 检查 maxRounds
     }
   }
 }

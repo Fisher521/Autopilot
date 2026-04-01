@@ -38,6 +38,7 @@ export function spawnCLI(
     cwd?: string
     timeoutMs?: number
     env?: Record<string, string>
+    stdin?: string
   },
 ): Promise<CLIResult> {
   return new Promise((resolve) => {
@@ -47,18 +48,23 @@ export function spawnCLI(
     const proc = spawn(command, args, {
       cwd: options?.cwd,
       env: { ...process.env, ...options?.env },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      shell: true,
+      stdio: [options?.stdin ? 'pipe' : 'ignore', 'pipe', 'pipe'],
+      shell: false,
     })
+
+    if (options?.stdin && proc.stdin) {
+      proc.stdin.write(options.stdin)
+      proc.stdin.end()
+    }
 
     let stdout = ''
     let stderr = ''
 
-    proc.stdout.on('data', (data: Buffer) => {
+    proc.stdout!.on('data', (data: Buffer) => {
       stdout += data.toString()
     })
 
-    proc.stderr.on('data', (data: Buffer) => {
+    proc.stderr!.on('data', (data: Buffer) => {
       stderr += data.toString()
     })
 
@@ -113,12 +119,10 @@ export async function executeViaCLI(
     throw new Error(`Voter "${voter.name}" has no CLI command configured`)
   }
 
-  // Replace {prompt} placeholder in args
-  const args = (voter.args ?? ['{prompt}']).map(a =>
-    a === '{prompt}' ? prompt : a
-  )
+  // Pass prompt via stdin instead of args to avoid shell escaping issues
+  const args = (voter.args ?? ['{prompt}']).filter(a => a !== '{prompt}')
 
-  return spawnCLI(voter.command, args, { cwd })
+  return spawnCLI(voter.command, args, { cwd, stdin: prompt })
 }
 
 // ============================================================
