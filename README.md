@@ -1,89 +1,96 @@
-# autopilot
+# Autopilot
 
-CLI 自动化循环引擎 — 结合 Karpathy autoresearch + CC Coordinator + 多 AI 对抗审查 + 自编程 + 决策议会。
+Autonomous AI loop engine — combining Karpathy's autoresearch pattern with multi-AI adversarial review, self-programming metrics, and a weighted decision council.
 
-## 核心理念
+## Core Idea
 
-人和 AI 是平等的决策参与者，区别只在权重。不是"人指挥 AI 干活"，是"决策议会投票"。
+Humans and AI agents are equal participants in the decision process — they differ only in weight. This isn't "human tells AI what to do." It's a **decision council that votes**.
 
-## 架构
+## Architecture
 
 ```
-autopilot/src/
-├── index.ts          # CLI 入口（init / run / verify / review / status / serve）
-├── loop.ts           # 核心循环引擎（verify → metric → judge → keep/discard → record）
-├── judge.ts          # 判定器（higher/lower/pass-fail）
-├── tracker.ts        # results.tsv 读写 + 统计
-├── reviewer.ts       # 多 AI 对抗审查（critique / evaluate / contradict / verify）
-├── selfProgram.ts    # 自编程引擎（自生成 metrics / constraints / strategy）
-├── council.ts        # 决策议会（加权投票 + 信任分动态调整）
-├── hub.ts            # 多任务中枢（并行任务 + 趋势评估 + Telegram 交互）
-├── computerUse.ts    # Computer Use 浏览器自动化
-├── notify.ts         # Telegram / Webhook 通知
-└── gateway.ts        # HTTP API（远程控制）
+src/
+├── index.ts          # CLI entry (init / run / verify / review / status / serve)
+├── loop.ts           # Core loop engine (verify → metric → judge → keep/discard → record)
+├── judge.ts          # Judgment engine (higher/lower/pass-fail)
+├── tracker.ts        # results.tsv read/write + statistics
+├── reviewer.ts       # Multi-AI adversarial review (critique / evaluate / contradict / verify)
+├── selfProgram.ts    # Self-programming engine (auto-generate metrics / constraints / strategy)
+├── council.ts        # Decision council (weighted voting + dynamic trust scores)
+├── hub.ts            # Multi-task hub (parallel tasks + trend evaluation + Telegram interaction)
+├── computerUse.ts    # Computer Use browser automation
+├── notify.ts         # Telegram / Webhook notifications
+└── gateway.ts        # HTTP API (remote control)
 ```
 
-## 三大创新
+## Three Key Innovations
 
-### 1. 自编程（selfProgram.ts）
+### 1. Self-Programming (`selfProgram.ts`)
 
-系统不依赖人写死评估标准。给定目标，AI 自动生成：
-- **评估指标** — 选什么 metric、怎么提取、权重多少
-- **约束规则** — hard（违反即 discard）vs soft（扣分但可继续）
-- **实验策略** — explore → exploit → consolidate 三阶段自动切换
+The system doesn't rely on hardcoded evaluation criteria. Given a goal, AI automatically generates:
+- **Evaluation metrics** — what to measure, how to extract, what weight to assign
+- **Constraints** — hard (violate = discard) vs soft (penalize but continue)
+- **Experiment strategy** — auto-switch between explore → exploit → consolidate phases
 
-每 N 轮自动 self-adjust：分析 results.tsv 趋势，调整权重，更新策略。
+Every N iterations, the system self-adjusts: analyzes results.tsv trends, rebalances weights, updates strategy.
 
-### 2. 多 AI 对抗审查（reviewer.ts）
+### 2. Multi-AI Adversarial Review (`reviewer.ts`)
 
-不是一个 AI 自说自话，而是多个 LLM 互相挑刺：
-- **Claude Code** — 执行者
-- **Codex** — 审查者（唱反调、找问题）
-- **OpenClaw (Gemini)** — 补充视角（工程性能）
+Not one AI talking to itself — multiple LLMs challenging each other:
+- **Claude Code** — executor
+- **Codex** — reviewer (devil's advocate, finds problems)
+- **OpenClaw (Gemini)** — supplementary perspective (engineering & performance)
 
-四种审查模式：critique（纯挑刺）、evaluate（客观打分）、contradict（故意反对）、verify（独立验证）。
+Four review modes: critique (pure criticism), evaluate (objective scoring), contradict (intentional opposition), verify (independent verification).
 
-### 3. 决策议会（council.ts）
+### 3. Decision Council (`council.ts`)
 
-人和 AI 做同样的三件事：补充信息、评估、决策。区别只在权重：
+Humans and AI do the same three things: provide context, evaluate, decide. The only difference is weight:
 
-| 参与者 | 权重 | 信任分 | 角色 |
-|--------|------|--------|------|
-| Human (Fisher) | 3.0 | 1.0 (固定) | 方向、上下文、最终决策 |
-| Claude Code | 1.0 | 0.85 (动态) | 代码质量、架构、安全 |
-| Codex | 1.0 | 0.80 (动态) | 审查、替代方案、边界情况 |
-| OpenClaw | 0.5 | 0.75 (动态) | 工程、性能、可扩展性 |
+| Participant | Weight | Trust Score | Role |
+|-------------|--------|-------------|------|
+| Human (Fisher) | 3.0 | 1.0 (fixed) | Direction, context, final call |
+| Claude Code | 1.0 | 0.85 (dynamic) | Code quality, architecture, security |
+| Codex | 1.0 | 0.80 (dynamic) | Review, alternatives, edge cases |
+| OpenClaw | 0.5 | 0.75 (dynamic) | Engineering, performance, scalability |
 
-决策规则：
-- 人投 reject → 一票否决
-- 人投 approve → 即使 AI 全反对也通过
-- 人不投票 → AI 加权投票决定
-- 信任分根据历史决策准确率自动调整（投对 +0.01，投错 -0.02）
+Decision rules:
+- Human votes reject → **veto** (instant reject)
+- Human votes approve → passes even if all AIs disagree
+- Human abstains → AI weighted vote decides
+- Trust scores auto-adjust based on historical accuracy (+0.01 correct, -0.02 wrong)
 
-## 使用
+## Usage
 
 ```bash
-# 安装
+# Install
 npm install -g autopilot
 
-# 初始化项目
+# Initialize a project
 autopilot init
 
-# 运行循环
+# Run the loop
 autopilot run
 
-# 查看状态
+# Check status
 autopilot status
 
-# 启动 HTTP API
+# Start HTTP API
 autopilot serve
 ```
 
-## 灵感来源
+## Inspired By
 
-- [Karpathy autoresearch](https://github.com/karpathy/autoresearch) — LOOP FOREVER + keep/discard
-- Claude Code Coordinator Mode — 多 agent 编排
-- OpenClaw — 远程 AI gateway
+- [Andrej Karpathy — autoresearch](https://github.com/karpathy/autoresearch) — LOOP FOREVER + keep/discard
+- [Claude Code](https://claude.ai/code) — Coordinator Mode, multi-agent orchestration
+- [OpenClaw](https://github.com/nicepkg/openclaw) — Remote AI gateway
+
+## Contributors
+
+- **[Fisher](https://github.com/Fisher521)** — Creator, architecture, product direction
+- **[Claude Code](https://claude.ai/code)** (Anthropic) — Implementation, code quality
+- **[Codex](https://openai.com/codex)** (OpenAI) — Adversarial review, alternative approaches
+- **[Andrej Karpathy](https://github.com/karpathy)** — autoresearch pattern that inspired the core loop
 
 ## License
 
