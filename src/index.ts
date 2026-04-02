@@ -24,6 +24,9 @@ import { createSelfProgram, renderStatus, type SelfProgram } from './selfProgram
 import { runLoop } from './loop.js'
 import { buildLoopConfig } from './runner.js'
 import { initResultsFile, summarizeResults } from './tracker.js'
+import { detectProjectInfo, generateProposal, formatProposal } from './discover.js'
+import { handleEscalation } from './councilRunner.js'
+import { switchPolicy, type PolicyType } from './selfProgram.js'
 
 const program = new Command()
 
@@ -40,7 +43,8 @@ program
   .command('init')
   .description('Initialize autopilot in the current project')
   .argument('[goal]', 'Project goal (what to optimize)')
-  .action(async (goal?: string) => {
+  .option('--skip-discover', 'Skip auto-discovery, create minimal config')
+  .action(async (goal: string | undefined, opts: { skipDiscover?: boolean }) => {
     const cwd = process.cwd()
 
     if (!goal) {
@@ -49,25 +53,80 @@ program
       process.exit(1)
     }
 
-    const result = initConfig(cwd, goal)
-    console.log(chalk.green(result))
-
-    // Check available CLIs
-    console.log('\nChecking available AI CLIs...')
+    // 1. Check CLIs
     const clis = detectCLIs()
+    const hasClaude = clis.find(c => c.id === 'claude')?.available
+
+    console.log('Checking AI CLIs...')
     for (const cli of clis) {
       const icon = cli.available ? chalk.green('✓') : chalk.red('✗')
-      const note = cli.available ? '' : chalk.gray(' (optional)')
-      console.log(`  ${icon} ${cli.command}${note}`)
+      console.log(`  ${icon} ${cli.command}`)
     }
 
-    const hasClaude = clis.find(c => c.id === 'claude')?.available
     if (!hasClaude) {
-      console.log(chalk.yellow('\nWarning: Claude Code CLI not found.'))
-      console.log(chalk.gray('Install it: https://claude.ai/code'))
-      console.log(chalk.gray('Autopilot requires Claude Code CLI to execute tasks.'))
+      console.log(chalk.red('\nClaude Code CLI required. Install: https://claude.ai/code'))
+      process.exit(1)
+    }
+
+    // 2. Detect project
+    console.log('\nAnalyzing project...')
+    const info = detectProjectInfo(cwd)
+
+    if (info.hasCode) {
+      console.log(chalk.green(`  Found: ${info.techStack.join(', ') || 'code project'}`))
+      if (info.dataSource) console.log(chalk.green(`  Data: ${info.dataSource}`))
+      if (info.hasTests) console.log(chalk.green(`  Tests: detected`))
     } else {
-      console.log(chalk.green('\nReady! Run `autopilot run` to start.'))
+      console.log(chalk.gray('  New project (no code detected)'))
+    }
+
+    // 3. Generate proposal
+    if (info.hasCode && !opts.skipDiscover) {
+      console.log('\nClaude is analyzing your project and proposing metrics...')
+
+      const config = loadConfig(cwd)
+      const claudeVoter = config.voters.find(v => v.provider === 'claude')
+
+      if (claudeVoter) {
+        const proposal = await generateProposal(goal, cwd, claudeVoter)
+
+        // Show proposal
+        console.log('\n' + formatProposal(proposal))
+
+        // Save config with proposed metrics/constraints
+        const configResult = initConfig(cwd, goal)
+
+        // Update config file with proposal data
+        const configPath = join(cwd, 'autopilot.config.json')
+        if (existsSync(configPath)) {
+          const existing = JSON.parse(readFileSync(configPath, 'utf-8'))
+          existing.goal = goal
+          existing.startPolicy = proposal.startPolicy
+          if (proposal.metrics.length > 0) {
+            existing.metrics = proposal.metrics
+          }
+          if (proposal.constraints.length > 0) {
+            existing.constraints = proposal.constraints
+          }
+          existing._proposal = {
+            reasoning: proposal.reasoning,
+            techStack: proposal.projectInfo.techStack,
+            generatedAt: new Date().toISOString(),
+            status: 'pending_council_approval',
+          }
+          writeFileSync(configPath, JSON.stringify(existing, null, 2) + '\n', 'utf-8')
+        }
+
+        console.log(chalk.yellow('\nProposal saved. Council should review before running.'))
+        console.log(chalk.gray('Review: autopilot.config.json'))
+        console.log(chalk.gray('Then: autopilot run'))
+      }
+    } else {
+      // Minimal config for new project
+      const result = initConfig(cwd, goal)
+      console.log(chalk.green('\n' + result))
+      console.log(chalk.gray('Metrics will be discovered during research phase.'))
+      console.log(chalk.green('Run `autopilot run` to start.'))
     }
   })
 
@@ -132,32 +191,81 @@ program
     console.log(chalk.gray(`Policy: ${state.currentPolicy.type} | Dir: ${config.projectDir}`))
     console.log()
 
-    // Build loop config and run
-    const loopConfig = buildLoopConfig(state, config)
+    // Main loop — runs until council says stop or max retries
+    let totalRounds = 0
+    let totalKept = 0
+    let totalDiscarded = 0
+    const MAX_COUNCIL_ROUNDS = 5  // max policy switches per run
 
-    try {
-      const result = await runLoop(loopConfig)
+    for (let councilRound = 0; councilRound < MAX_COUNCIL_ROUNDS; councilRound++) {
+      const loopConfig = buildLoopConfig(state, config)
 
-      // Save state
-      writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf-8')
+      try {
+        const result = await runLoop(loopConfig)
+        totalRounds += result.rounds
+        totalKept += result.kept
+        totalDiscarded += result.discarded
 
-      // Report
-      console.log(chalk.bold('\n--- Loop Complete ---'))
-      console.log(`Rounds: ${result.rounds}`)
-      console.log(`Kept: ${result.kept} | Discarded: ${result.discarded}`)
+        // Save state after each loop
+        writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf-8')
 
-      if (result.escalated) {
-        console.log(chalk.yellow(`\nEscalated: ${result.escalationReason}`))
-        console.log(chalk.gray('The council needs to decide the next policy.'))
-        console.log(chalk.gray('Edit autopilot.config.json or run `autopilot run` after adjusting.'))
+        if (!result.escalated) {
+          // Loop ended without escalation — done
+          break
+        }
+
+        // Escalation — convene the council
+        console.log(chalk.yellow(`\nEscalation: ${result.escalationReason}`))
+        console.log(chalk.bold('Convening council...'))
+
+        const lastEscalation = state.escalations[state.escalations.length - 1]
+        if (!lastEscalation) break
+
+        const decision = await handleEscalation(
+          lastEscalation,
+          state.currentPolicy.type,
+          state.roundsOnCurrentPolicy,
+          config,
+        )
+
+        if (decision.action === 'stop') {
+          console.log(chalk.red('Council decided: STOP'))
+          break
+        }
+
+        if (decision.action === 'switch-policy' && decision.newPolicy) {
+          console.log(chalk.green(`Council decided: switch to ${decision.newPolicy}`))
+          state = switchPolicy(
+            state,
+            decision.newPolicy as PolicyType,
+            'council',
+            {
+              instructions: decision.instructions,
+              maxRounds: decision.maxRounds,
+            },
+          )
+          // Continue outer loop — will run again with new policy
+        } else {
+          // Continue with same policy (reset rounds)
+          state.roundsOnCurrentPolicy = 0
+          state.escalations = []
+        }
+
+        // Save updated state
+        writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf-8')
+
+      } catch (err: any) {
+        console.error(chalk.red(`\nError: ${err.message}`))
+        writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf-8')
+        process.exit(1)
       }
-    } catch (err: any) {
-      console.error(chalk.red(`\nError: ${err.message}`))
-
-      // Save state even on error
-      writeFileSync(statePath, JSON.stringify(state, null, 2), 'utf-8')
-      process.exit(1)
     }
+
+    // Final report
+    console.log(chalk.bold('\n--- Run Complete ---'))
+    console.log(`Total rounds: ${totalRounds}`)
+    console.log(`Kept: ${totalKept} | Discarded: ${totalDiscarded}`)
+    console.log(`Final policy: ${state.currentPolicy.type}`)
   })
 
 // ============================================================
