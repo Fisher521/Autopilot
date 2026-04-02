@@ -22,4 +22,5 @@ Thumbs.db
 # Runtime data
 results.tsv
 .autopilot-state.json
+council-decisions.jsonl
 *.log

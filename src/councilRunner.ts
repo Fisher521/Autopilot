@@ -15,7 +15,8 @@
  *   - Codex — weight 1.0, votes as devil's advocate (adversarial review)
  */
 
-import { createInterface } from 'node:readline'
+import { appendFileSync } from 'node:fs'
+import { join } from 'node:path'
 import type { AutopilotConfig, VoterConfig } from './config.js'
 import type { Vote, DecisionContext, DecisionResult } from './council.js'
 import { resolveVotes, getVoters, registerVoter } from './council.js'
@@ -88,77 +89,20 @@ async function collectAIVote(
 // Collect human vote (non-interactive — read from file or timeout)
 // ============================================================
 
-async function collectHumanVote(
+function collectHumanVote(
   config: AutopilotConfig,
-  context: DecisionContext,
-): Promise<Vote> {
+): Vote {
+  // Human does NOT vote in real-time. AI council decides autonomously.
+  // Decision is recorded and sent to human for post-hoc review via CLI/IM.
   const humanVoter = config.voters.find(v => v.type === 'human')
-  const voterId = humanVoter?.id ?? 'human'
-  const timeoutSec = config.humanVoteTimeout
 
-  // If timeout is 0, skip human vote entirely
-  if (timeoutSec === 0) {
-    return {
-      voterId,
-      action: 'abstain',
-      reasoning: 'Human vote disabled (timeout=0).',
-      confidence: 0,
-      timestamp: new Date(),
-    }
+  return {
+    voterId: humanVoter?.id ?? 'human',
+    action: 'abstain',
+    reasoning: 'AI council decides autonomously. Human reviews post-hoc.',
+    confidence: 0,
+    timestamp: new Date(),
   }
-
-  // Show vote request in terminal
-  console.log(`\n${'='.repeat(50)}`)
-  console.log(`YOUR VOTE NEEDED — ${context.type}`)
-  console.log(`${'='.repeat(50)}`)
-  console.log(context.description)
-  console.log(`\nOptions:`)
-  console.log(`  a / approve  — approve this direction`)
-  console.log(`  r / reject   — reject, stop or change direction`)
-  console.log(`  s / skip     — abstain, let AI council decide`)
-  console.log(`  (auto-skip in ${timeoutSec}s)\n`)
-
-  try {
-    const answer = await promptWithTimeout(`Your vote: `, timeoutSec * 1000)
-    const trimmed = answer.trim().toLowerCase()
-
-    if (trimmed === 'a' || trimmed === 'approve') {
-      return { voterId, action: 'approve', reasoning: 'Human approved.', confidence: 1.0, timestamp: new Date() }
-    } else if (trimmed === 'r' || trimmed === 'reject') {
-      return { voterId, action: 'reject', reasoning: answer, confidence: 1.0, timestamp: new Date() }
-    } else {
-      return { voterId, action: 'abstain', reasoning: 'Human skipped.', confidence: 0, timestamp: new Date() }
-    }
-  } catch {
-    // Timeout
-    return {
-      voterId,
-      action: 'abstain',
-      reasoning: `Human did not vote within ${timeoutSec}s — AI council decides.`,
-      confidence: 0,
-      timestamp: new Date(),
-    }
-  }
-}
-
-/**
- * Read a line from stdin with timeout
- */
-function promptWithTimeout(question: string, timeoutMs: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const rl = createInterface({ input: process.stdin, output: process.stdout })
-
-    const timer = setTimeout(() => {
-      rl.close()
-      reject(new Error('timeout'))
-    }, timeoutMs)
-
-    rl.question(question, (answer: string) => {
-      clearTimeout(timer)
-      rl.close()
-      resolve(answer)
-    })
-  })
 }
 
 // ============================================================
@@ -205,8 +149,8 @@ export async function runCouncilVote(
     if (vote) votes.push(vote)
   }
 
-  // 2. Human vote (interactive stdin with timeout)
-  const humanVote = await collectHumanVote(config, context)
+  // 2. Human abstains — AI decides, human reviews after
+  const humanVote = collectHumanVote(config)
   votes.push(humanVote)
   console.log(`  [council] Human: ${humanVote.action}`)
 
@@ -220,6 +164,29 @@ export async function runCouncilVote(
     console.log(`  (Human override applied)`)
   }
   console.log(`--- End Vote ---\n`)
+
+  // Record decision for human post-hoc review
+  const record = {
+    timestamp: new Date().toISOString(),
+    type: context.type,
+    description: context.description,
+    decision: result.decision,
+    weightedScore: result.weightedScore,
+    reasoning: result.reasoning,
+    votes: result.votes.map(v => ({
+      voter: v.voterId,
+      action: v.action,
+      score: v.score,
+      confidence: v.confidence,
+      reasoning: v.reasoning?.slice(0, 200),
+    })),
+    humanReview: 'pending',
+  }
+
+  try {
+    const logPath = join(config.projectDir, 'council-decisions.jsonl')
+    appendFileSync(logPath, JSON.stringify(record) + '\n', 'utf-8')
+  } catch { /* ignore write errors */ }
 
   return result
 }
