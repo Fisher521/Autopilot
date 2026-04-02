@@ -43,6 +43,8 @@ export interface AutopilotConfig {
   maxConsecutiveFailures: number
   /** Human vote timeout in seconds (0 = no timeout, AI decides) */
   humanVoteTimeout: number
+  /** CLI execution timeout in seconds (default 900 = 15 min) */
+  cliTimeout: number
   /** Results file path */
   resultsFile: string
   /** State file path (for persistence across runs) */
@@ -59,6 +61,7 @@ const DEFAULT_CONFIG: AutopilotConfig = {
   goal: '',
   startPolicy: 'research',
   projectDir: process.cwd(),
+  cliTimeout: 900,
   voters: [
     {
       id: 'human',

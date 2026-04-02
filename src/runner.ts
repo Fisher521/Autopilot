@@ -43,7 +43,7 @@ export function spawnCLI(
 ): Promise<CLIResult> {
   return new Promise((resolve) => {
     const start = Date.now()
-    const timeout = options?.timeoutMs ?? 300_000 // 5 min default
+    const timeout = options?.timeoutMs ?? 900_000 // 15 min default
 
     const proc = spawn(command, args, {
       cwd: options?.cwd,
@@ -114,6 +114,7 @@ export async function executeViaCLI(
   voter: VoterConfig,
   prompt: string,
   cwd: string,
+  timeoutMs?: number,
 ): Promise<CLIResult> {
   if (!voter.command) {
     throw new Error(`Voter "${voter.name}" has no CLI command configured`)
@@ -122,7 +123,7 @@ export async function executeViaCLI(
   // Pass prompt via stdin instead of args to avoid shell escaping issues
   const args = (voter.args ?? ['{prompt}']).filter(a => a !== '{prompt}')
 
-  return spawnCLI(voter.command, args, { cwd, stdin: prompt })
+  return spawnCLI(voter.command, args, { cwd, stdin: prompt, timeoutMs })
 }
 
 // ============================================================
@@ -250,7 +251,7 @@ export function buildLoopConfig(
         console.log(`\n[round ${round}] Executing via ${claudeVoter.name}...`)
       }
 
-      const result = await executeViaCLI(claudeVoter, fullPrompt, config.projectDir)
+      const result = await executeViaCLI(claudeVoter, fullPrompt, config.projectDir, config.cliTimeout * 1000)
 
       if (result.exitCode !== 0) {
         throw new Error(`CLI exited with code ${result.exitCode}: ${result.stderr}`)
