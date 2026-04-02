@@ -149,10 +149,9 @@ export async function runCouncilVote(
     if (vote) votes.push(vote)
   }
 
-  // 2. Human abstains — AI decides, human reviews after
+  // 2. Human does not participate in real-time — will review post-hoc
   const humanVote = collectHumanVote(config)
   votes.push(humanVote)
-  console.log(`  [council] Human: ${humanVote.action}`)
 
   // 3. Resolve
   const result = resolveVotes(context, votes, true)
