@@ -252,6 +252,24 @@ export async function handleEscalation(
     }
   }
 
-  // Default: approve means continue current policy
+  // No explicit policy suggestion — auto-advance to next phase
+  // research → explore → exploit → consolidate
+  const POLICY_PROGRESSION: Record<string, string> = {
+    'research': 'explore',
+    'analyze': 'explore',
+    'explore': 'exploit',
+    'exploit': 'consolidate',
+    'consolidate': 'consolidate', // stay — final phase
+  }
+
+  const nextPolicy = POLICY_PROGRESSION[currentPolicy]
+  if (nextPolicy && nextPolicy !== currentPolicy) {
+    return {
+      action: 'switch-policy',
+      newPolicy: nextPolicy,
+    }
+  }
+
+  // Already at final phase — continue
   return { action: 'continue' }
 }
