@@ -35,13 +35,10 @@ async function collectAIVote(
 ): Promise<Vote | null> {
   if (!voter.command) return null
 
-  const prompt = context.type === 'escalation'
-    ? buildPolicyVotePrompt(
-        context.escalation!,
-        context.description,
-        [],
-      )
-    : buildVotePrompt(context)
+  // Always use buildVotePrompt — it requires explicit approve/reject/needs-info
+  // buildPolicyVotePrompt outputs a different format (policy choice, no action field)
+  // which causes votes to default to abstain
+  const prompt = buildVotePrompt(context)
 
   try {
     const result = await executeViaCLI(voter, prompt, cwd)
@@ -62,7 +59,10 @@ async function collectAIVote(
 
     return {
       voterId: voter.id,
-      action: parsed.action ?? 'abstain',
+      // AI cannot abstain — force to approve if invalid action
+      action: ['approve', 'reject', 'needs-info'].includes(parsed.action)
+        ? parsed.action
+        : 'approve',
       score: parsed.score,
       reasoning: parsed.reasoning ?? '',
       synthesis: parsed.synthesis,
@@ -73,7 +73,14 @@ async function collectAIVote(
     }
   } catch (err: any) {
     console.log(`  [council] ${voter.name} error: ${err.message}`)
-    return null
+    // AI failed to respond — default to approve (continue), not silence
+    return {
+      voterId: voter.id,
+      action: 'approve' as const,
+      reasoning: `${voter.name} failed to respond, defaulting to approve.`,
+      confidence: 0.3,
+      timestamp: new Date(),
+    }
   }
 }
 

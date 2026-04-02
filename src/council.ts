@@ -203,7 +203,11 @@ export function resolveVotes(
   }
 
   const avgScore = totalWeight > 0 ? totalWeightedScore / totalWeight : 5
-  const decision = approveWeight > rejectWeight ? 'approve' : 'reject'
+
+  // All abstain → default to approve (continue), not reject (stop)
+  // Rationale: stopping requires an explicit reject vote, silence = continue
+  const decision = totalWeight === 0 ? 'approve'
+    : approveWeight >= rejectWeight ? 'approve' : 'reject'
 
   // 有人要求补充信息 → 暂停
   const needsInfo = votes.filter(v => v.action === 'needs-info')
@@ -286,10 +290,12 @@ You MUST first summarize what you understood. Include specific:
 NEVER write "based on the findings" or "looks good overall" — that's lazy delegation.
 Prove you read and understood by citing specifics.
 
-## Your Vote
+## Your Vote (REQUIRED — you MUST choose one, no abstaining)
 1. APPROVE — this change/direction is good
 2. REJECT — this is bad, explain why and suggest alternatives
 3. NEEDS-INFO — you can't decide without more information
+
+You are NOT allowed to abstain. Pick one of the three options above.
 
 Output JSON:
 {
