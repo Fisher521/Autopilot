@@ -15,6 +15,7 @@
  *   - Codex — weight 1.0, votes as devil's advocate (adversarial review)
  */
 
+import { createInterface } from 'node:readline'
 import type { AutopilotConfig, VoterConfig } from './config.js'
 import type { Vote, DecisionContext, DecisionResult } from './council.js'
 import { resolveVotes, getVoters, registerVoter } from './council.js'
@@ -80,20 +81,77 @@ async function collectAIVote(
 // Collect human vote (non-interactive — read from file or timeout)
 // ============================================================
 
-function collectHumanVote(
+async function collectHumanVote(
   config: AutopilotConfig,
-): Vote {
-  // In CLI mode, human votes by editing config or via Telegram (future).
-  // For now: human abstains (AI council decides), unless timeout is 0.
+  context: DecisionContext,
+): Promise<Vote> {
   const humanVoter = config.voters.find(v => v.type === 'human')
+  const voterId = humanVoter?.id ?? 'human'
+  const timeoutSec = config.humanVoteTimeout
 
-  return {
-    voterId: humanVoter?.id ?? 'human',
-    action: 'abstain',
-    reasoning: 'Human did not vote within timeout — AI council decides.',
-    confidence: 0,
-    timestamp: new Date(),
+  // If timeout is 0, skip human vote entirely
+  if (timeoutSec === 0) {
+    return {
+      voterId,
+      action: 'abstain',
+      reasoning: 'Human vote disabled (timeout=0).',
+      confidence: 0,
+      timestamp: new Date(),
+    }
   }
+
+  // Show vote request in terminal
+  console.log(`\n${'='.repeat(50)}`)
+  console.log(`YOUR VOTE NEEDED — ${context.type}`)
+  console.log(`${'='.repeat(50)}`)
+  console.log(context.description)
+  console.log(`\nOptions:`)
+  console.log(`  a / approve  — approve this direction`)
+  console.log(`  r / reject   — reject, stop or change direction`)
+  console.log(`  s / skip     — abstain, let AI council decide`)
+  console.log(`  (auto-skip in ${timeoutSec}s)\n`)
+
+  try {
+    const answer = await promptWithTimeout(`Your vote: `, timeoutSec * 1000)
+    const trimmed = answer.trim().toLowerCase()
+
+    if (trimmed === 'a' || trimmed === 'approve') {
+      return { voterId, action: 'approve', reasoning: 'Human approved.', confidence: 1.0, timestamp: new Date() }
+    } else if (trimmed === 'r' || trimmed === 'reject') {
+      return { voterId, action: 'reject', reasoning: answer, confidence: 1.0, timestamp: new Date() }
+    } else {
+      return { voterId, action: 'abstain', reasoning: 'Human skipped.', confidence: 0, timestamp: new Date() }
+    }
+  } catch {
+    // Timeout
+    return {
+      voterId,
+      action: 'abstain',
+      reasoning: `Human did not vote within ${timeoutSec}s — AI council decides.`,
+      confidence: 0,
+      timestamp: new Date(),
+    }
+  }
+}
+
+/**
+ * Read a line from stdin with timeout
+ */
+function promptWithTimeout(question: string, timeoutMs: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const rl = createInterface({ input: process.stdin, output: process.stdout })
+
+    const timer = setTimeout(() => {
+      rl.close()
+      reject(new Error('timeout'))
+    }, timeoutMs)
+
+    rl.question(question, (answer: string) => {
+      clearTimeout(timer)
+      rl.close()
+      resolve(answer)
+    })
+  })
 }
 
 // ============================================================
@@ -140,8 +198,8 @@ export async function runCouncilVote(
     if (vote) votes.push(vote)
   }
 
-  // 2. Human vote (abstain for now — future: Telegram, interactive)
-  const humanVote = collectHumanVote(config)
+  // 2. Human vote (interactive stdin with timeout)
+  const humanVote = await collectHumanVote(config, context)
   votes.push(humanVote)
   console.log(`  [council] Human: ${humanVote.action}`)
 
